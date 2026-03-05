@@ -99,6 +99,16 @@ npm start -- https://ridewithgps.com https://huh.ridewithgps.com
 | **Navigate** | Click links, use back/forward buttons |
 | **Refresh** | Browser refresh button, F5, or Ctrl+R |
 | **Keyboard** | Arrow keys, Enter, Tab, shortcuts |
+| **Style Diff** | Press Delete to highlight style differences |
+
+## Style Diff Mode
+
+Press **Delete** to toggle style diff highlighting on the control window. This compares CSS styles between staging and production:
+
+- **Red solid outline** - Element has style differences (layout or typography)
+- **Orange dashed outline** - Element is new (doesn't exist in production)
+
+Compared properties include layout (width, height, padding, margin, display, position, flex) and typography (font-size, font-weight, font-family, line-height, text-align).
 
 ## Use Cases
 

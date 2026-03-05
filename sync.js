@@ -72,7 +72,7 @@ console.log(`
 ║  RIGHT (control): ${config.rightUrl.padEnd(42)} ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Interact with the RIGHT window - LEFT will mirror actions    ║
-║  - Click, drag (pan), scroll wheel (zoom) all supported       ║
+║  Press DELETE to toggle style diff highlighting               ║
 ║  Press Ctrl+C to exit                                         ║
 ╚═══════════════════════════════════════════════════════════════╝
 `);
@@ -112,6 +112,38 @@ async function main() {
     leftPage.goto(config.leftUrl, { waitUntil: 'domcontentloaded' }),
     rightPage.goto(config.rightUrl, { waitUntil: 'domcontentloaded' }),
   ]);
+
+  // Style properties to compare for diff highlighting
+  const diffStyleProperties = [
+    // Layout
+    'width', 'height', 'padding', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+    'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
+    'display', 'position', 'top', 'right', 'bottom', 'left',
+    'flexDirection', 'justifyContent', 'alignItems', 'flexWrap', 'gap',
+    // Typography
+    'fontSize', 'fontWeight', 'fontFamily', 'lineHeight', 'textAlign',
+    'letterSpacing', 'textTransform', 'textDecoration',
+  ];
+
+  // Expose function to get element info from mirror (left/production) page
+  await rightPage.exposeFunction('getMirrorElementInfo', async (selector) => {
+    try {
+      const result = await leftPage.evaluate((sel, props) => {
+        const el = document.querySelector(sel);
+        if (!el) return { exists: false, styles: null };
+
+        const computed = window.getComputedStyle(el);
+        const styles = {};
+        for (const prop of props) {
+          styles[prop] = computed[prop];
+        }
+        return { exists: true, styles };
+      }, selector, diffStyleProperties);
+      return result;
+    } catch (err) {
+      return { exists: false, styles: null, error: err.message };
+    }
+  });
 
   // Inject event capture script into the control page (right)
   await rightPage.exposeFunction('syncToLeft', async (event) => {
@@ -259,6 +291,25 @@ async function main() {
 
       // Note: click events are handled by mousedown + mouseup sequence
       // No separate click handler needed (would cause double-clicks)
+
+      // Detect clicks on links to distinguish from address bar navigation
+      document.addEventListener('click', (e) => {
+        // Check if click was on a link or inside a link
+        let target = e.target;
+        while (target && target !== document.body) {
+          if (target.tagName === 'A' && target.href) {
+            // Signal that a link navigation is expected
+            window.expectLinkNavigation();
+            break;
+          }
+          target = target.parentElement;
+        }
+      }, true);
+
+      // Detect form submissions (which can also navigate)
+      document.addEventListener('submit', () => {
+        window.expectLinkNavigation();
+      }, true);
 
       // Capture wheel events (for map zoom)
       document.addEventListener('wheel', (e) => {
@@ -410,7 +461,8 @@ async function main() {
 
       // Capture browser back/forward via popstate
       window.addEventListener('popstate', () => {
-        // The framenavigated event will handle the actual navigation sync
+        // Signal that navigation is expected (from back/forward buttons)
+        window.expectLinkNavigation();
         console.log('[Dual DOM Driver] History navigation detected');
       });
 
@@ -430,7 +482,141 @@ async function main() {
         }
       }, true);
 
+      // ============ STYLE DIFF HIGHLIGHTING ============
+      // Toggle with Delete key - highlights elements with style differences from production
+
+      let diffModeEnabled = false;
+      const DIFF_OUTLINE_STYLE = '3px solid red';
+      const DIFF_ATTR = 'data-dual-dom-diff';
+
+      // Style properties to compare (must match server-side list)
+      const diffStyleProperties = [
+        'width', 'height', 'padding', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+        'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
+        'display', 'position', 'top', 'right', 'bottom', 'left',
+        'flexDirection', 'justifyContent', 'alignItems', 'flexWrap', 'gap',
+        'fontSize', 'fontWeight', 'fontFamily', 'lineHeight', 'textAlign',
+        'letterSpacing', 'textTransform', 'textDecoration',
+      ];
+
+      // Get a unique selector path for an element
+      function getUniquePath(el) {
+        if (el === document.body) return 'body';
+        if (el === document.documentElement) return 'html';
+
+        const parts = [];
+        let current = el;
+
+        while (current && current !== document.body && current !== document.documentElement) {
+          let selector = current.tagName.toLowerCase();
+
+          if (current.id) {
+            selector = '#' + CSS.escape(current.id);
+            parts.unshift(selector);
+            break;
+          } else {
+            // Add nth-child for uniqueness
+            const parent = current.parentElement;
+            if (parent) {
+              const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+              if (siblings.length > 1) {
+                const index = siblings.indexOf(current) + 1;
+                selector += ':nth-of-type(' + index + ')';
+              }
+            }
+            parts.unshift(selector);
+          }
+
+          current = current.parentElement;
+        }
+
+        return 'body > ' + parts.join(' > ');
+      }
+
+      // Compare styles and return true if different
+      function stylesAreDifferent(localStyles, mirrorStyles) {
+        for (const prop of diffStyleProperties) {
+          if (localStyles[prop] !== mirrorStyles[prop]) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      // Clear all diff highlights
+      function clearDiffHighlights() {
+        const highlighted = document.querySelectorAll('[' + DIFF_ATTR + ']');
+        highlighted.forEach(el => {
+          el.style.outline = el.getAttribute(DIFF_ATTR) || '';
+          el.removeAttribute(DIFF_ATTR);
+        });
+      }
+
+      // Run diff comparison on visible elements
+      async function runDiffComparison() {
+        console.log('[Dual DOM Driver] Running style diff comparison...');
+
+        // Get all elements in the viewport (limit to reasonable set)
+        const allElements = document.querySelectorAll('body *');
+        let diffCount = 0;
+        let newCount = 0;
+
+        for (const el of allElements) {
+          // Skip script, style, and hidden elements
+          if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'NOSCRIPT') continue;
+          if (el.offsetParent === null && el.tagName !== 'BODY') continue; // hidden
+
+          const selector = getUniquePath(el);
+          if (!selector) continue;
+
+          try {
+            const mirrorInfo = await window.getMirrorElementInfo(selector);
+            const localStyles = window.getComputedStyle(el);
+
+            // Store original outline so we can restore it
+            if (!el.hasAttribute(DIFF_ATTR)) {
+              el.setAttribute(DIFF_ATTR, el.style.outline || '');
+            }
+
+            if (!mirrorInfo.exists) {
+              // Element doesn't exist in production - new element
+              el.style.outline = '3px dashed orange';
+              newCount++;
+            } else if (stylesAreDifferent(localStyles, mirrorInfo.styles)) {
+              // Styles are different
+              el.style.outline = DIFF_OUTLINE_STYLE;
+              diffCount++;
+            } else {
+              // No difference - restore original
+              el.style.outline = el.getAttribute(DIFF_ATTR) || '';
+              el.removeAttribute(DIFF_ATTR);
+            }
+          } catch (err) {
+            // Skip elements that cause errors
+          }
+        }
+
+        console.log('[Dual DOM Driver] Diff complete: ' + diffCount + ' style differences, ' + newCount + ' new elements');
+      }
+
+      // Toggle diff mode with Delete key
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Delete' && !focusedInput) {
+          e.preventDefault();
+          diffModeEnabled = !diffModeEnabled;
+
+          if (diffModeEnabled) {
+            console.log('[Dual DOM Driver] Diff mode ENABLED - highlighting style differences');
+            runDiffComparison();
+          } else {
+            console.log('[Dual DOM Driver] Diff mode DISABLED');
+            clearDiffHighlights();
+          }
+        }
+      }, true);
+
       console.log('[Dual DOM Driver] Event capture active - click, drag, wheel, text input, navigation supported');
+      console.log('[Dual DOM Driver] Press DELETE to toggle style diff highlighting');
     })();
   `;
 
@@ -438,14 +624,28 @@ async function main() {
 
   // Track navigation to sync back/forward/refresh
   let isNavigating = false;
+  let linkClickTime = 0; // Timestamp of last link click (for filtering address bar navigations)
+  const LINK_NAV_WINDOW = 3000; // 3 second window to consider navigation as link-triggered
   const rightOrigin = new URL(config.rightUrl).origin;
   const leftOrigin = new URL(config.leftUrl).origin;
 
-  // Sync navigation when right page navigates (handles back/forward/refresh/links)
+  // Expose function to signal that a link was clicked (navigation expected)
+  await rightPage.exposeFunction('expectLinkNavigation', () => {
+    linkClickTime = Date.now();
+  });
+
+  // Sync navigation when right page navigates (only for link clicks, not address bar)
   rightPage.on('framenavigated', async (frame) => {
     // Only handle main frame
     if (frame !== rightPage.mainFrame()) return;
     if (isNavigating) return;
+
+    // Only sync if navigation was triggered by a link click (not address bar)
+    const timeSinceClick = Date.now() - linkClickTime;
+    if (timeSinceClick > LINK_NAV_WINDOW) {
+      console.log(`[sync] Ignoring address bar navigation (not syncing)`);
+      return;
+    }
 
     try {
       isNavigating = true;

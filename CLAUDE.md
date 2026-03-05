@@ -41,5 +41,14 @@ The `getSelector()` function builds CSS selectors with priority: `name` attribut
 ### Event Types Supported
 Mouse (down/move/up), wheel (via CDP), scroll (debounced 50ms), input/focus/blur, keyboard (with special key handling), text selection, navigation (back/forward/refresh).
 
+### Style Diff Highlighting
+Press **Delete** to toggle style diff mode. Compares computed styles between control (staging) and mirror (production):
+- **Red solid outline**: Element exists on both but has style differences
+- **Orange dashed outline**: Element is new (exists on control but not production)
+
+Compared properties:
+- Layout: width, height, padding, margin, display, position, flex properties
+- Typography: font-size, font-weight, font-family, line-height, text-align, letter-spacing, text-transform, text-decoration
+
 ### CDP Usage
 Wheel events use Chrome DevTools Protocol directly (`Input.dispatchMouseEvent` with `mouseWheel` type) for reliable map zoom behavior.
