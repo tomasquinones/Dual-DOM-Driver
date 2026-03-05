@@ -1,8 +1,8 @@
-# Dual DOM Sync
+# Dual DOM Driver
 
 A side-by-side browser comparison tool for QA testing. Control one browser window and watch your actions mirrored in real-time on another - perfect for comparing production vs staging environments.
 
-![Dual DOM Sync](https://img.shields.io/badge/QA-Tool-blue) ![Node.js](https://img.shields.io/badge/Node.js-20+-green)
+![Dual DOM Driver](https://img.shields.io/badge/QA-Tool-blue) ![Node.js](https://img.shields.io/badge/Node.js-20+-green)
 
 ## Features
 
@@ -19,7 +19,7 @@ A side-by-side browser comparison tool for QA testing. Control one browser windo
 ## Installation
 
 ```bash
-cd qa/dual-dom-sync
+cd dual-dom-driver
 npm install
 ```
 

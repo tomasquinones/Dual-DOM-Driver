@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dual DOM Sync</title>
+  <title>Dual DOM Driver</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -273,12 +273,12 @@
           }
         }, true);
 
-        console.log('[Dual DOM Sync] Injection successful (same-origin)');
+        console.log('[Dual DOM Driver] Injection successful (same-origin)');
         rightStatus.textContent = 'Synced';
         overlay.style.display = 'none';
 
       } catch (e) {
-        console.log('[Dual DOM Sync] Cross-origin - limited sync available');
+        console.log('[Dual DOM Driver] Cross-origin - limited sync available');
         rightStatus.textContent = 'Cross-origin';
 
         // Fallback: overlay click capture
@@ -299,7 +299,7 @@
             overlay.style.pointerEvents = 'auto';
           }, 100);
 
-          alert(`Click at (${Math.round(x)}, ${Math.round(y)}) - Cross-origin prevents automatic sync.\n\nFor full sync, use the Node.js version:\n  cd qa/dual-dom-sync && npm install && npm start`);
+          alert(`Click at (${Math.round(x)}, ${Math.round(y)}) - Cross-origin prevents automatic sync.\n\nFor full sync, use the Node.js version:\n  cd dual-dom-driver && npm install && npm start`);
         };
       }
     }

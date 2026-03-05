@@ -1,5 +1,5 @@
 {
-  "name": "dual-dom-sync",
+  "name": "dual-dom-driver",
   "version": "1.0.0",
   "description": "Side-by-side browser sync tool for comparing production vs staging",
   "type": "module",

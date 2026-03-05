@@ -17,7 +17,7 @@ function parseArgs() {
 
     if (arg === '--help' || arg === '-h') {
       console.log(`
-Dual DOM Sync - Side-by-side browser comparison tool
+Dual DOM Driver - Side-by-side browser comparison tool
 
 Usage:
   npm start -- [options]
@@ -66,7 +66,7 @@ const config = parseArgs();
 
 console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
-║                    Dual DOM Sync Tool                         ║
+║                   Dual DOM Driver Tool                        ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  LEFT  (mirror):  ${config.leftUrl.padEnd(42)} ║
 ║  RIGHT (control): ${config.rightUrl.padEnd(42)} ║
@@ -411,7 +411,7 @@ async function main() {
       // Capture browser back/forward via popstate
       window.addEventListener('popstate', () => {
         // The framenavigated event will handle the actual navigation sync
-        console.log('[Dual DOM Sync] History navigation detected');
+        console.log('[Dual DOM Driver] History navigation detected');
       });
 
       // Capture keyboard shortcuts for navigation
@@ -430,7 +430,7 @@ async function main() {
         }
       }, true);
 
-      console.log('[Dual DOM Sync] Event capture active - click, drag, wheel, text input, navigation supported');
+      console.log('[Dual DOM Driver] Event capture active - click, drag, wheel, text input, navigation supported');
     })();
   `;
 
