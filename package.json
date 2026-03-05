@@ -1,0 +1,13 @@
+{
+  "name": "dual-dom-sync",
+  "version": "1.0.0",
+  "description": "Side-by-side browser sync tool for comparing production vs staging",
+  "type": "module",
+  "scripts": {
+    "start": "node sync.js",
+    "help": "node sync.js --help"
+  },
+  "dependencies": {
+    "puppeteer": "^22.0.0"
+  }
+}
