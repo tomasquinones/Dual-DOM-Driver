@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import puppeteer from 'puppeteer';
+import pixelmatch from 'pixelmatch';
+import { PNG } from 'pngjs';
 
 // Parse command line arguments
 function parseArgs() {
@@ -10,6 +12,7 @@ function parseArgs() {
     rightUrl: 'https://huh.ridewithgps.com',
     width: 960,
     height: 1080,
+    diffThreshold: 0.5,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -30,6 +33,7 @@ Options:
   --right <url>        Alias for --control
   --width, -w <px>     Width of each viewport (default: 960)
   --height <px>        Height of each viewport (default: 1080)
+  --threshold, -t <n>  Diff sensitivity 0-1 (default: 0.5, higher = less sensitive)
   --help, -h           Show this help
 
 Examples:
@@ -49,6 +53,8 @@ Examples:
       config.width = parseInt(args[++i], 10);
     } else if (arg === '--height') {
       config.height = parseInt(args[++i], 10);
+    } else if (arg === '--threshold' || arg === '-t') {
+      config.diffThreshold = parseFloat(args[++i]);
     } else if (!arg.startsWith('-')) {
       // Positional args: first is left/mirror, second is right/control
       if (!config._posCount) config._posCount = 0;
@@ -71,8 +77,8 @@ console.log(`
 ║  LEFT  (mirror):  ${config.leftUrl.padEnd(42)} ║
 ║  RIGHT (control): ${config.rightUrl.padEnd(42)} ║
 ╠═══════════════════════════════════════════════════════════════╣
-║  Interact with the RIGHT window - LEFT will mirror actions    ║
-║  Press DELETE to toggle style diff highlighting               ║
+║  Interact with EITHER window - the other will mirror actions  ║
+║  Press D to run visual diff | Shift+D to clear overlay        ║
 ║  Press Ctrl+C to exit                                         ║
 ╚═══════════════════════════════════════════════════════════════╝
 `);
@@ -113,143 +119,257 @@ async function main() {
     rightPage.goto(config.rightUrl, { waitUntil: 'domcontentloaded' }),
   ]);
 
-  // Style properties to compare for diff highlighting
-  const diffStyleProperties = [
-    // Layout
-    'width', 'height', 'padding', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-    'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
-    'display', 'position', 'top', 'right', 'bottom', 'left',
-    'flexDirection', 'justifyContent', 'alignItems', 'flexWrap', 'gap',
-    // Typography
-    'fontSize', 'fontWeight', 'fontFamily', 'lineHeight', 'textAlign',
-    'letterSpacing', 'textTransform', 'textDecoration',
-  ];
+  // Visual diff function - compares screenshots pixel by pixel
+  async function runVisualDiff() {
+    console.log('[diff] Taking screenshots...');
 
-  // Expose function to get element info from mirror (left/production) page
-  await rightPage.exposeFunction('getMirrorElementInfo', async (selector) => {
-    try {
-      const result = await leftPage.evaluate((sel, props) => {
-        const el = document.querySelector(sel);
-        if (!el) return { exists: false, styles: null };
+    // Hide any existing diff overlay on the right page before taking screenshot
+    await rightPage.evaluate(() => {
+      const overlay = document.getElementById('dual-dom-diff-overlay');
+      if (overlay) overlay.style.display = 'none';
+      const loading = document.getElementById('dual-dom-diff-loading');
+      if (loading) loading.style.display = 'none';
+    });
 
-        const computed = window.getComputedStyle(el);
-        const styles = {};
-        for (const prop of props) {
-          styles[prop] = computed[prop];
+    // Ensure both pages are at the same scroll position
+    const scrollPos = await rightPage.evaluate(() => ({
+      x: window.scrollX,
+      y: window.scrollY
+    }));
+    await leftPage.evaluate(({ x, y }) => window.scrollTo(x, y), scrollPos);
+
+    // Small delay for scroll to settle
+    await new Promise(r => setTimeout(r, 200));
+
+    // Take screenshots of both pages
+    const [leftBuffer, rightBuffer] = await Promise.all([
+      leftPage.screenshot({ encoding: 'binary', type: 'png' }),
+      rightPage.screenshot({ encoding: 'binary', type: 'png' }),
+    ]);
+
+    // Re-show the overlay container (it will be updated with new results)
+    await rightPage.evaluate(() => {
+      const overlay = document.getElementById('dual-dom-diff-overlay');
+      if (overlay) overlay.style.display = '';
+    });
+
+    // Parse PNG data
+    const leftPng = PNG.sync.read(leftBuffer);
+    const rightPng = PNG.sync.read(rightBuffer);
+
+    // Use the smaller dimensions (crop to common size)
+    const fullWidth = Math.min(leftPng.width, rightPng.width);
+    const fullHeight = Math.min(leftPng.height, rightPng.height);
+
+    console.log(`[diff] Left: ${leftPng.width}x${leftPng.height}, Right: ${rightPng.width}x${rightPng.height}, Using: ${fullWidth}x${fullHeight}`);
+
+    // Downscale factor - averages out sub-pixel rendering differences
+    const scale = 2;
+    const width = Math.floor(fullWidth / scale);
+    const height = Math.floor(fullHeight / scale);
+
+    // Helper to downscale PNG data (averages pixels in each block)
+    function downscalePngData(png, srcWidth, srcHeight, targetWidth, targetHeight, scale) {
+      const result = new Uint8Array(targetWidth * targetHeight * 4);
+
+      for (let y = 0; y < targetHeight; y++) {
+        for (let x = 0; x < targetWidth; x++) {
+          let r = 0, g = 0, b = 0, a = 0;
+          let count = 0;
+
+          // Average the pixels in this block
+          for (let dy = 0; dy < scale; dy++) {
+            for (let dx = 0; dx < scale; dx++) {
+              const srcX = x * scale + dx;
+              const srcY = y * scale + dy;
+              if (srcX < srcWidth && srcY < srcHeight) {
+                const srcIdx = (srcY * png.width + srcX) * 4;
+                r += png.data[srcIdx];
+                g += png.data[srcIdx + 1];
+                b += png.data[srcIdx + 2];
+                a += png.data[srcIdx + 3];
+                count++;
+              }
+            }
+          }
+
+          const dstIdx = (y * targetWidth + x) * 4;
+          result[dstIdx] = Math.round(r / count);
+          result[dstIdx + 1] = Math.round(g / count);
+          result[dstIdx + 2] = Math.round(b / count);
+          result[dstIdx + 3] = Math.round(a / count);
         }
-        return { exists: true, styles };
-      }, selector, diffStyleProperties);
-      return result;
-    } catch (err) {
-      return { exists: false, styles: null, error: err.message };
-    }
-  });
-
-  // Inject event capture script into the control page (right)
-  await rightPage.exposeFunction('syncToLeft', async (event) => {
-    try {
-      switch (event.type) {
-        case 'mousedown':
-          await leftPage.mouse.move(event.x, event.y);
-          await leftPage.mouse.down({ button: event.button });
-          break;
-
-        case 'mousemove':
-          if (event.buttons > 0) {
-            await leftPage.mouse.move(event.x, event.y);
-          }
-          break;
-
-        case 'mouseup':
-          await leftPage.mouse.up({ button: event.button });
-          break;
-
-        case 'wheel':
-          // Use CDP for wheel events (more reliable for maps)
-          const client = await leftPage.createCDPSession();
-          await client.send('Input.dispatchMouseEvent', {
-            type: 'mouseWheel',
-            x: event.x,
-            y: event.y,
-            deltaX: event.deltaX,
-            deltaY: event.deltaY,
-          });
-          break;
-
-        case 'scroll':
-          await leftPage.evaluate(({ x, y }) => {
-            window.scrollTo(x, y);
-          }, { x: event.scrollX, y: event.scrollY });
-          break;
-
-        case 'input':
-          // Find element by selector and set value
-          await leftPage.evaluate(({ selector, value }) => {
-            const el = document.querySelector(selector);
-            if (el) {
-              el.value = value;
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-          }, { selector: event.selector, value: event.value });
-          break;
-
-        case 'focus':
-          // Focus the same element on the left page
-          await leftPage.evaluate(({ selector }) => {
-            const el = document.querySelector(selector);
-            if (el) el.focus();
-          }, { selector: event.selector });
-          break;
-
-        case 'goBack':
-          await leftPage.goBack().catch(() => {});
-          break;
-
-        case 'goForward':
-          await leftPage.goForward().catch(() => {});
-          break;
-
-        case 'refresh':
-          await leftPage.reload().catch(() => {});
-          break;
-
-        case 'keydown':
-          await leftPage.keyboard.down(event.key);
-          break;
-
-        case 'keyup':
-          await leftPage.keyboard.up(event.key);
-          break;
-
-        case 'keypress':
-          // For printable characters, use type() for better compatibility
-          if (event.char && event.char.length === 1) {
-            await leftPage.keyboard.type(event.char);
-          }
-          break;
-
-        case 'selection':
-          // Sync text selection in input fields
-          await leftPage.evaluate(({ selector, start, end }) => {
-            const el = document.querySelector(selector);
-            if (el && el.setSelectionRange) {
-              el.focus();
-              el.setSelectionRange(start, end);
-            }
-          }, { selector: event.selector, start: event.start, end: event.end });
-          break;
-
-        case 'navigate':
-          // Sync navigation by converting URLs
-          const leftUrl = event.url.replace(config.rightUrl, config.leftUrl);
-          await leftPage.goto(leftUrl, { waitUntil: 'domcontentloaded' });
-          break;
       }
-    } catch (err) {
-      console.log(`[sync error] ${event.type}:`, err.message);
+      return result;
     }
-  });
+
+    // Downscale both images (averages out sub-pixel differences)
+    const leftData = downscalePngData(leftPng, fullWidth, fullHeight, width, height, scale);
+    const rightData = downscalePngData(rightPng, fullWidth, fullHeight, width, height, scale);
+
+    // Create diff image
+    const diffPng = new PNG({ width, height });
+
+    // Compare pixels - returns number of different pixels
+    // threshold: higher = less sensitive (0.5 handles sub-pixel rendering differences)
+    // includeAA: false = ignore anti-aliasing differences
+    const numDiffPixels = pixelmatch(
+      leftData,
+      rightData,
+      diffPng.data,
+      width,
+      height,
+      { threshold: config.diffThreshold, includeAA: false, alpha: 0.3, diffColor: [255, 0, 0] }
+    );
+
+    const totalPixels = width * height;
+    const diffPercent = ((numDiffPixels / totalPixels) * 100).toFixed(2);
+
+    console.log(`[diff] Comparison complete: ${numDiffPixels.toLocaleString()} different pixels (${diffPercent}%)`);
+
+    // Convert diff image to base64 data URL
+    const diffBuffer = PNG.sync.write(diffPng);
+    const diffDataUrl = 'data:image/png;base64,' + diffBuffer.toString('base64');
+
+    return {
+      diffDataUrl,
+      numDiffPixels,
+      diffPercent,
+      width: fullWidth,  // Return full size for overlay positioning
+      height: fullHeight,
+      scale
+    };
+  }
+
+  // Expose visual diff function to browser (both pages)
+  const exposeDiffFunction = async (page) => {
+    await page.exposeFunction('runVisualDiff', async () => {
+      try {
+        return await runVisualDiff();
+      } catch (err) {
+        console.error('[diff error]', err.message);
+        return { error: err.message };
+      }
+    });
+  };
+  await exposeDiffFunction(rightPage);
+  await exposeDiffFunction(leftPage);
+
+  // Sync lock to prevent infinite loops
+  let syncLock = false;
+
+  // Create sync handler for a target page
+  function createSyncHandler(targetPage, sourceUrl, targetUrl) {
+    return async (event) => {
+      if (syncLock) return; // Prevent sync loops
+      syncLock = true;
+
+      try {
+        switch (event.type) {
+          case 'mousedown':
+            await targetPage.mouse.move(event.x, event.y);
+            await targetPage.mouse.down({ button: event.button });
+            break;
+
+          case 'mousemove':
+            if (event.buttons > 0) {
+              await targetPage.mouse.move(event.x, event.y);
+            }
+            break;
+
+          case 'mouseup':
+            await targetPage.mouse.up({ button: event.button });
+            break;
+
+          case 'wheel':
+            // Use CDP for wheel events (more reliable for maps)
+            const client = await targetPage.createCDPSession();
+            await client.send('Input.dispatchMouseEvent', {
+              type: 'mouseWheel',
+              x: event.x,
+              y: event.y,
+              deltaX: event.deltaX,
+              deltaY: event.deltaY,
+            });
+            break;
+
+          case 'scroll':
+            await targetPage.evaluate(({ x, y }) => {
+              window.scrollTo(x, y);
+            }, { x: event.scrollX, y: event.scrollY });
+            break;
+
+          case 'input':
+            await targetPage.evaluate(({ selector, value }) => {
+              const el = document.querySelector(selector);
+              if (el) {
+                el.value = value;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }, { selector: event.selector, value: event.value });
+            break;
+
+          case 'focus':
+            await targetPage.evaluate(({ selector }) => {
+              const el = document.querySelector(selector);
+              if (el) el.focus();
+            }, { selector: event.selector });
+            break;
+
+          case 'goBack':
+            await targetPage.goBack().catch(() => {});
+            break;
+
+          case 'goForward':
+            await targetPage.goForward().catch(() => {});
+            break;
+
+          case 'refresh':
+            await targetPage.reload().catch(() => {});
+            break;
+
+          case 'keydown':
+            await targetPage.keyboard.down(event.key);
+            break;
+
+          case 'keyup':
+            await targetPage.keyboard.up(event.key);
+            break;
+
+          case 'keypress':
+            if (event.char && event.char.length === 1) {
+              await targetPage.keyboard.type(event.char);
+            }
+            break;
+
+          case 'selection':
+            await targetPage.evaluate(({ selector, start, end }) => {
+              const el = document.querySelector(selector);
+              if (el && el.setSelectionRange) {
+                el.focus();
+                el.setSelectionRange(start, end);
+              }
+            }, { selector: event.selector, start: event.start, end: event.end });
+            break;
+
+          case 'navigate':
+            const newUrl = event.url.replace(sourceUrl, targetUrl);
+            await targetPage.goto(newUrl, { waitUntil: 'domcontentloaded' });
+            break;
+        }
+      } catch (err) {
+        console.log(`[sync error] ${event.type}:`, err.message);
+      } finally {
+        // Release lock immediately - synthetic events are already blocked
+        syncLock = false;
+      }
+    };
+  }
+
+  // Expose sync functions for both directions
+  await rightPage.exposeFunction('syncToOther', createSyncHandler(leftPage, config.rightUrl, config.leftUrl));
+  await leftPage.exposeFunction('syncToOther', createSyncHandler(rightPage, config.leftUrl, config.rightUrl));
 
   // Inject the event listener script
   const injectScript = `
@@ -259,7 +379,7 @@ async function main() {
 
       // Capture mousedown (start of click or drag)
       document.addEventListener('mousedown', (e) => {
-        window.syncToLeft({
+        window.syncToOther({
           type: 'mousedown',
           x: e.clientX,
           y: e.clientY,
@@ -270,7 +390,7 @@ async function main() {
       // Capture mousemove (during drag)
       document.addEventListener('mousemove', (e) => {
         if (e.buttons > 0) {
-          window.syncToLeft({
+          window.syncToOther({
             type: 'mousemove',
             x: e.clientX,
             y: e.clientY,
@@ -281,7 +401,7 @@ async function main() {
 
       // Capture mouseup (end of click or drag)
       document.addEventListener('mouseup', (e) => {
-        window.syncToLeft({
+        window.syncToOther({
           type: 'mouseup',
           x: e.clientX,
           y: e.clientY,
@@ -313,7 +433,7 @@ async function main() {
 
       // Capture wheel events (for map zoom)
       document.addEventListener('wheel', (e) => {
-        window.syncToLeft({
+        window.syncToOther({
           type: 'wheel',
           x: e.clientX,
           y: e.clientY,
@@ -328,7 +448,7 @@ async function main() {
       window.addEventListener('scroll', () => {
         clearTimeout(scrollTimeout);
         scrollTimeout = setTimeout(() => {
-          window.syncToLeft({
+          window.syncToOther({
             type: 'scroll',
             scrollX: window.scrollX,
             scrollY: window.scrollY,
@@ -339,7 +459,7 @@ async function main() {
       // Capture input changes (fallback sync for paste, autocomplete, etc.)
       document.addEventListener('input', (e) => {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
-          window.syncToLeft({
+          window.syncToOther({
             type: 'input',
             selector: getSelector(e.target),
             value: e.target.value,
@@ -391,7 +511,7 @@ async function main() {
         const el = e.target;
         if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
           focusedInput = el;
-          window.syncToLeft({
+          window.syncToOther({
             type: 'focus',
             selector: getSelector(el),
           });
@@ -409,7 +529,7 @@ async function main() {
       document.addEventListener('keydown', (e) => {
         // Skip if it's a modifier key alone
         if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) {
-          window.syncToLeft({ type: 'keydown', key: e.key });
+          window.syncToOther({ type: 'keydown', key: e.key });
           return;
         }
 
@@ -420,28 +540,28 @@ async function main() {
             'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
             'Home', 'End', 'PageUp', 'PageDown'];
           if (specialKeys.includes(e.key) || e.ctrlKey || e.metaKey) {
-            window.syncToLeft({ type: 'keydown', key: e.key });
+            window.syncToOther({ type: 'keydown', key: e.key });
           }
           // Printable chars handled by keypress
         } else {
           // Outside text fields, send all keydowns
-          window.syncToLeft({ type: 'keydown', key: e.key });
+          window.syncToOther({ type: 'keydown', key: e.key });
         }
       }, true);
 
       // Capture keypress for printable characters in text fields
       document.addEventListener('keypress', (e) => {
         if (focusedInput && e.key.length === 1) {
-          window.syncToLeft({ type: 'keypress', char: e.key });
+          window.syncToOther({ type: 'keypress', char: e.key });
         }
       }, true);
 
       document.addEventListener('keyup', (e) => {
         // Send keyup for modifier keys
         if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) {
-          window.syncToLeft({ type: 'keyup', key: e.key });
+          window.syncToOther({ type: 'keyup', key: e.key });
         } else if (!focusedInput) {
-          window.syncToLeft({ type: 'keyup', key: e.key });
+          window.syncToOther({ type: 'keyup', key: e.key });
         }
       }, true);
 
@@ -450,7 +570,7 @@ async function main() {
         const el = e.target;
         if ((el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
             typeof el.selectionStart === 'number') {
-          window.syncToLeft({
+          window.syncToOther({
             type: 'selection',
             selector: getSelector(el),
             start: el.selectionStart,
@@ -470,182 +590,186 @@ async function main() {
       document.addEventListener('keydown', (e) => {
         // Refresh: F5 or Ctrl/Cmd+R
         if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && e.key === 'r')) {
-          window.syncToLeft({ type: 'refresh' });
+          window.syncToOther({ type: 'refresh' });
         }
         // Back: Alt+Left or Backspace (when not in input)
         if (e.altKey && e.key === 'ArrowLeft') {
-          window.syncToLeft({ type: 'goBack' });
+          window.syncToOther({ type: 'goBack' });
         }
         // Forward: Alt+Right
         if (e.altKey && e.key === 'ArrowRight') {
-          window.syncToLeft({ type: 'goForward' });
+          window.syncToOther({ type: 'goForward' });
         }
       }, true);
 
-      // ============ STYLE DIFF HIGHLIGHTING ============
-      // Toggle with Delete key - highlights elements with style differences from production
+      // ============ VISUAL PIXEL DIFF ============
+      // Compares screenshots pixel-by-pixel and overlays differences
+      // Toggle with Cmd+Delete, enabled by default
 
-      let diffModeEnabled = false;
-      const DIFF_OUTLINE_STYLE = '3px solid red';
-      const DIFF_ATTR = 'data-dual-dom-diff';
+      let diffModeEnabled = ${config.diffEnabled};
+      let diffOverlay = null;
+      let diffRunning = false;
 
-      // Style properties to compare (must match server-side list)
-      const diffStyleProperties = [
-        'width', 'height', 'padding', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-        'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
-        'display', 'position', 'top', 'right', 'bottom', 'left',
-        'flexDirection', 'justifyContent', 'alignItems', 'flexWrap', 'gap',
-        'fontSize', 'fontWeight', 'fontFamily', 'lineHeight', 'textAlign',
-        'letterSpacing', 'textTransform', 'textDecoration',
-      ];
+      // Create or update the diff overlay
+      function createDiffOverlay() {
+        if (diffOverlay) return diffOverlay;
 
-      // Get a unique selector path for an element
-      function getUniquePath(el) {
-        if (el === document.body) return 'body';
-        if (el === document.documentElement) return 'html';
+        diffOverlay = document.createElement('div');
+        diffOverlay.id = 'dual-dom-diff-overlay';
+        diffOverlay.style.cssText = \`
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          pointer-events: none;
+          z-index: 999999;
+          mix-blend-mode: multiply;
+        \`;
+        document.body.appendChild(diffOverlay);
+        return diffOverlay;
+      }
 
-        const parts = [];
-        let current = el;
+      // Show diff result as overlay
+      function showDiffOverlay(diffDataUrl, numDiffPixels, diffPercent) {
+        const overlay = createDiffOverlay();
 
-        while (current && current !== document.body && current !== document.documentElement) {
-          let selector = current.tagName.toLowerCase();
-
-          if (current.id) {
-            selector = '#' + CSS.escape(current.id);
-            parts.unshift(selector);
-            break;
-          } else {
-            // Add nth-child for uniqueness
-            const parent = current.parentElement;
-            if (parent) {
-              const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
-              if (siblings.length > 1) {
-                const index = siblings.indexOf(current) + 1;
-                selector += ':nth-of-type(' + index + ')';
-              }
-            }
-            parts.unshift(selector);
-          }
-
-          current = current.parentElement;
+        if (numDiffPixels === 0) {
+          overlay.innerHTML = \`
+            <div style="position: fixed; bottom: 10px; left: 10px; background: #4CAF50; color: white;
+                        padding: 12px 20px; border-radius: 8px; font-family: system-ui; font-size: 14px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.2); pointer-events: auto; cursor: pointer;
+                        display: flex; align-items: center; gap: 10px;"
+                 title="Click to dismiss">
+              <span>✓ No visual differences detected</span>
+              <span style="opacity: 0.7; font-size: 12px;">✕</span>
+            </div>
+          \`;
+          // Add click handler to dismiss
+          overlay.querySelector('div').onclick = () => clearDiffOverlay();
+        } else {
+          // Scale up the downscaled diff image to cover the viewport
+          overlay.innerHTML = \`
+            <img src="\${diffDataUrl}" style="width: 100%; height: 100%; opacity: 0.7; image-rendering: pixelated;">
+            <div style="position: fixed; bottom: 10px; left: 10px; background: #f44336; color: white;
+                        padding: 12px 20px; border-radius: 8px; font-family: system-ui; font-size: 14px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.2); pointer-events: auto; cursor: pointer;
+                        display: flex; align-items: center; gap: 10px;"
+                 title="Click to dismiss">
+              <span>⚠ \${numDiffPixels.toLocaleString()} pixels differ (\${diffPercent}%)</span>
+              <span style="opacity: 0.7; font-size: 12px;">✕</span>
+            </div>
+          \`;
+          // Add click handler to dismiss
+          overlay.querySelector('div:last-child').onclick = () => clearDiffOverlay();
         }
 
-        return 'body > ' + parts.join(' > ');
+        console.log('[Dual DOM Driver] Diff overlay shown - ' +
+          (numDiffPixels === 0 ? 'no differences' : numDiffPixels.toLocaleString() + ' pixels differ'));
       }
 
-      // Compare styles and return true if different
-      function stylesAreDifferent(localStyles, mirrorStyles) {
-        for (const prop of diffStyleProperties) {
-          if (localStyles[prop] !== mirrorStyles[prop]) {
-            return true;
-          }
+      // Clear the diff overlay
+      function clearDiffOverlay() {
+        if (diffOverlay) {
+          diffOverlay.remove();
+          diffOverlay = null;
         }
-        return false;
       }
 
-      // Clear all diff highlights
-      function clearDiffHighlights() {
-        const highlighted = document.querySelectorAll('[' + DIFF_ATTR + ']');
-        highlighted.forEach(el => {
-          el.style.outline = el.getAttribute(DIFF_ATTR) || '';
-          el.removeAttribute(DIFF_ATTR);
-        });
-      }
-
-      // Run diff comparison on visible elements
-      async function runDiffComparison() {
-        console.log('[Dual DOM Driver] Running style diff comparison...');
-
-        // Get all elements in the viewport (limit to reasonable set)
-        const allElements = document.querySelectorAll('body *');
-        let diffCount = 0;
-        let newCount = 0;
-
-        for (const el of allElements) {
-          // Skip script, style, and hidden elements
-          if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'NOSCRIPT') continue;
-          if (el.offsetParent === null && el.tagName !== 'BODY') continue; // hidden
-
-          const selector = getUniquePath(el);
-          if (!selector) continue;
-
-          try {
-            const mirrorInfo = await window.getMirrorElementInfo(selector);
-            const localStyles = window.getComputedStyle(el);
-
-            // Store original outline so we can restore it
-            if (!el.hasAttribute(DIFF_ATTR)) {
-              el.setAttribute(DIFF_ATTR, el.style.outline || '');
-            }
-
-            if (!mirrorInfo.exists) {
-              // Element doesn't exist in production - new element
-              el.style.outline = '3px dashed orange';
-              newCount++;
-            } else if (stylesAreDifferent(localStyles, mirrorInfo.styles)) {
-              // Styles are different
-              el.style.outline = DIFF_OUTLINE_STYLE;
-              diffCount++;
-            } else {
-              // No difference - restore original
-              el.style.outline = el.getAttribute(DIFF_ATTR) || '';
-              el.removeAttribute(DIFF_ATTR);
-            }
-          } catch (err) {
-            // Skip elements that cause errors
-          }
+      // Run visual diff comparison
+      async function runDiff() {
+        if (diffRunning) {
+          console.log('[Dual DOM Driver] Diff already running, please wait...');
+          return;
         }
 
-        console.log('[Dual DOM Driver] Diff complete: ' + diffCount + ' style differences, ' + newCount + ' new elements');
+        diffRunning = true;
+        clearDiffOverlay();
+
+        // Show loading indicator
+        const loadingDiv = document.createElement('div');
+        loadingDiv.id = 'dual-dom-diff-loading';
+        loadingDiv.style.cssText = \`
+          position: fixed; top: 10px; right: 10px; background: #2196F3; color: white;
+          padding: 12px 20px; border-radius: 8px; font-family: system-ui; font-size: 14px;
+          box-shadow: 0 2px 10px rgba(0,0,0,0.2); z-index: 999999;
+        \`;
+        loadingDiv.textContent = '⏳ Running visual diff...';
+        document.body.appendChild(loadingDiv);
+
+        try {
+          console.log('[Dual DOM Driver] Running visual pixel diff...');
+          const result = await window.runVisualDiff();
+
+          loadingDiv.remove();
+
+          if (result.error) {
+            console.error('[Dual DOM Driver] Diff error:', result.error);
+            return;
+          }
+
+          showDiffOverlay(result.diffDataUrl, result.numDiffPixels, result.diffPercent);
+        } catch (err) {
+          console.error('[Dual DOM Driver] Diff error:', err);
+          loadingDiv.remove();
+        } finally {
+          diffRunning = false;
+        }
       }
 
-      // Toggle diff mode with Delete key
+      // Toggle diff mode with D key (when not in input field)
+      // D = run diff, Shift+D = clear diff overlay
       document.addEventListener('keydown', (e) => {
-        if (e.key === 'Delete' && !focusedInput) {
+        // Only trigger on 'd' or 'D' key, not in input fields
+        if ((e.key === 'd' || e.key === 'D') && !focusedInput && !e.metaKey && !e.ctrlKey && !e.altKey) {
           e.preventDefault();
-          diffModeEnabled = !diffModeEnabled;
 
-          if (diffModeEnabled) {
-            console.log('[Dual DOM Driver] Diff mode ENABLED - highlighting style differences');
-            runDiffComparison();
+          if (e.shiftKey) {
+            // Shift+D: clear diff overlay
+            diffModeEnabled = false;
+            clearDiffOverlay();
+            console.log('[Dual DOM Driver] Visual diff cleared');
           } else {
-            console.log('[Dual DOM Driver] Diff mode DISABLED');
-            clearDiffHighlights();
+            // D: run diff
+            diffModeEnabled = true;
+            runDiff();
           }
         }
       }, true);
 
       console.log('[Dual DOM Driver] Event capture active - click, drag, wheel, text input, navigation supported');
-      console.log('[Dual DOM Driver] Press DELETE to toggle style diff highlighting');
+      console.log('[Dual DOM Driver] Press D to run visual diff, Shift+D to clear');
     })();
   `;
 
-  await rightPage.evaluate(injectScript);
+  // Inject script into both pages
+  await Promise.all([
+    rightPage.evaluate(injectScript),
+    leftPage.evaluate(injectScript),
+  ]);
 
   // Track navigation to sync back/forward/refresh
   let isNavigating = false;
-  let linkClickTime = 0; // Timestamp of last link click (for filtering address bar navigations)
-  const LINK_NAV_WINDOW = 3000; // 3 second window to consider navigation as link-triggered
+  let linkClickTime = { left: 0, right: 0 };
+  const LINK_NAV_WINDOW = 3000;
   const rightOrigin = new URL(config.rightUrl).origin;
   const leftOrigin = new URL(config.leftUrl).origin;
 
   // Expose function to signal that a link was clicked (navigation expected)
   await rightPage.exposeFunction('expectLinkNavigation', () => {
-    linkClickTime = Date.now();
+    linkClickTime.right = Date.now();
+  });
+  await leftPage.exposeFunction('expectLinkNavigation', () => {
+    linkClickTime.left = Date.now();
   });
 
-  // Sync navigation when right page navigates (only for link clicks, not address bar)
+  // Sync navigation when right page navigates
   rightPage.on('framenavigated', async (frame) => {
-    // Only handle main frame
     if (frame !== rightPage.mainFrame()) return;
     if (isNavigating) return;
 
-    // Only sync if navigation was triggered by a link click (not address bar)
-    const timeSinceClick = Date.now() - linkClickTime;
-    if (timeSinceClick > LINK_NAV_WINDOW) {
-      console.log(`[sync] Ignoring address bar navigation (not syncing)`);
-      return;
-    }
+    const timeSinceClick = Date.now() - linkClickTime.right;
+    if (timeSinceClick > LINK_NAV_WINDOW) return;
 
     try {
       isNavigating = true;
@@ -663,10 +787,42 @@ async function main() {
     }
   });
 
-  // Re-inject script on navigation
+  // Sync navigation when left page navigates
+  leftPage.on('framenavigated', async (frame) => {
+    if (frame !== leftPage.mainFrame()) return;
+    if (isNavigating) return;
+
+    const timeSinceClick = Date.now() - linkClickTime.left;
+    if (timeSinceClick > LINK_NAV_WINDOW) return;
+
+    try {
+      isNavigating = true;
+      const leftUrl = frame.url();
+      const rightUrl = leftUrl.replace(leftOrigin, rightOrigin);
+
+      if (rightPage.url() !== rightUrl) {
+        console.log(`[sync] Navigating right to: ${rightUrl}`);
+        await rightPage.goto(rightUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+      }
+    } catch (err) {
+      // Page might be navigating
+    } finally {
+      isNavigating = false;
+    }
+  });
+
+  // Re-inject script on navigation for both pages
   rightPage.on('domcontentloaded', async () => {
     try {
       await rightPage.evaluate(injectScript);
+    } catch (err) {
+      // Page might be navigating
+    }
+  });
+
+  leftPage.on('domcontentloaded', async () => {
+    try {
+      await leftPage.evaluate(injectScript);
     } catch (err) {
       // Page might be navigating
     }

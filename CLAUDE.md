@@ -12,6 +12,7 @@ Dual DOM Driver is a QA testing tool that opens two browser windows side-by-side
 npm start                                    # Default URLs (ridewithgps.com vs huh.ridewithgps.com)
 npm start -- -m <url> -c <url>               # Custom mirror (left) and control (right) URLs
 npm start -- --width 800 --height 900        # Custom viewport dimensions
+npm start -- --no-diff                       # Disable visual pixel diff
 npm start -- --help                          # Show help
 ```
 
@@ -23,10 +24,10 @@ Note: The `--` after `npm start` is required to pass arguments to the script.
 The entire implementation is in `sync.js` (~490 lines). There's also an `index.html` browser-based fallback with iframe approach, but it has same-origin limitations.
 
 ### Event Flow
-1. **Control page (right)**: User interacts here
+1. **Either page**: User can interact with either the left or right window
 2. **Injected script**: Captures DOM events via document-level listeners with `{ capture: true }`
-3. **`syncToLeft()` bridge**: Puppeteer-exposed function sends events to Node.js
-4. **Mirror page (left)**: Puppeteer APIs replay the events
+3. **`syncToOther()` bridge**: Puppeteer-exposed function sends events to Node.js
+4. **Other page**: Puppeteer APIs replay the events on the opposite page
 
 ### Key Components in sync.js
 
@@ -41,14 +42,15 @@ The `getSelector()` function builds CSS selectors with priority: `name` attribut
 ### Event Types Supported
 Mouse (down/move/up), wheel (via CDP), scroll (debounced 50ms), input/focus/blur, keyboard (with special key handling), text selection, navigation (back/forward/refresh).
 
-### Style Diff Highlighting
-Press **Delete** to toggle style diff mode. Compares computed styles between control (staging) and mirror (production):
-- **Red solid outline**: Element exists on both but has style differences
-- **Orange dashed outline**: Element is new (exists on control but not production)
+### Visual Pixel Diff
+**Enabled by default** - takes screenshots of both pages and highlights pixel-level differences. Works reliably with React apps and dynamic DOM structures. Use `--no-diff` flag to start with it disabled.
+- **D**: Run visual diff comparison
+- **Shift+D**: Clear diff overlay
 
-Compared properties:
-- Layout: width, height, padding, margin, display, position, flex properties
-- Typography: font-size, font-weight, font-family, line-height, text-align, letter-spacing, text-transform, text-decoration
+The diff overlay shows:
+- **Red pixels**: Areas where the two pages differ visually
+- **Green badge**: "No visual differences detected" when pages are identical
+- **Red badge**: Shows count and percentage of differing pixels
 
 ### CDP Usage
 Wheel events use Chrome DevTools Protocol directly (`Input.dispatchMouseEvent` with `mouseWheel` type) for reliable map zoom behavior.
