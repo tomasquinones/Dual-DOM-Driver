@@ -10,7 +10,7 @@ function parseArgs() {
   const config = {
     leftUrl: 'https://ridewithgps.com',
     rightUrl: 'https://huh.ridewithgps.com',
-    width: 1280,
+    width: 640,
     height: 800,
     diffThreshold: 0.5,
   };
@@ -31,7 +31,7 @@ Options:
   --control, -c <url>  Control URL (right side, staging)
   --left <url>         Alias for --mirror
   --right <url>        Alias for --control
-  --width, -w <px>     Width of each viewport (default: 1280)
+  --width, -w <px>     Width of each viewport (default: 640)
   --height <px>        Height of each viewport (default: 800)
   --threshold, -t <n>  Diff sensitivity 0-1 (default: 0.5, higher = less sensitive)
   --help, -h           Show this help

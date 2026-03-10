@@ -46,7 +46,7 @@ npm start -- [options]
 |--------|-------|-------------|---------|
 | `--mirror <url>` | `-m`, `--left` | Mirror URL (left window) | `https://ridewithgps.com` |
 | `--control <url>` | `-c`, `--right` | Control URL (right window) | `https://huh.ridewithgps.com` |
-| `--width <px>` | `-w` | Width of each viewport | `1280` |
+| `--width <px>` | `-w` | Width of each viewport | `640` |
 | `--height <px>` | | Height of each viewport | `800` |
 | `--threshold <n>` | `-t` | Diff sensitivity 0-1 (higher = less sensitive) | `0.5` |
 | `--help` | `-h` | Show help | |
