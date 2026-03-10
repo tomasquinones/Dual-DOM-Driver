@@ -1,13 +1,14 @@
 # Dual DOM Driver
 
-A side-by-side browser comparison tool for QA testing. Control one browser window and watch your actions mirrored in real-time on another - perfect for comparing production vs staging environments.
+A side-by-side browser comparison tool for QA testing. Control either browser window and watch your actions mirrored in real-time on the other - perfect for comparing production vs staging environments.
 
 ![Dual DOM Driver](https://img.shields.io/badge/QA-Tool-blue) ![Node.js](https://img.shields.io/badge/Node.js-20+-green)
 
 ## Features
 
 - **Side-by-side comparison** - View production and staging simultaneously
-- **Synchronized interactions** - Actions on the control window mirror to the other
+- **Bidirectional sync** - Control from either window, the other mirrors your actions
+- **Visual pixel diff** - Highlight pixel-level differences between the two pages
 - **Full input support**:
   - Click and drag (map panning)
   - Scroll wheel (map zooming)
@@ -47,6 +48,7 @@ npm start -- [options]
 | `--control <url>` | `-c`, `--right` | Control URL (right window) | `https://huh.ridewithgps.com` |
 | `--width <px>` | `-w` | Width of each viewport | `960` |
 | `--height <px>` | | Height of each viewport | `1080` |
+| `--threshold <n>` | `-t` | Diff sensitivity 0-1 (higher = less sensitive) | `0.5` |
 | `--help` | `-h` | Show help | |
 
 ### Examples
@@ -61,6 +63,12 @@ npm start -- -m https://ridewithgps.com/routes/12345 -c https://huh.ridewithgps.
 # Adjust viewport for smaller screens
 npm start -- --width 800 --height 900
 
+# More sensitive diff (catches smaller differences)
+npm start -- --threshold 0.3
+
+# Less sensitive diff (ignores minor rendering differences)
+npm start -- --threshold 0.7
+
 # Positional arguments also work (mirror first, control second)
 npm start -- https://ridewithgps.com https://huh.ridewithgps.com
 ```
@@ -69,29 +77,30 @@ npm start -- https://ridewithgps.com https://huh.ridewithgps.com
 
 ## How It Works
 
-1. **Two browser windows open** - Left is the "mirror" (production), right is the "control" (staging)
-2. **Interact with the RIGHT window** - All your actions are captured
-3. **LEFT window mirrors your actions** - Clicks, drags, typing, scrolling all sync automatically
+1. **Two browser windows open** - Left is the "mirror", right is the "control"
+2. **Interact with EITHER window** - All your actions are captured and synced to the other
+3. **Press D to compare** - Visual diff highlights pixel-level differences
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Your Screen                              │
-├────────────────────────────┬────────────────────────────────────┤
-│                            │                                    │
-│      MIRROR (Left)         │        CONTROL (Right)             │
-│                            │                                    │
-│   Production environment   │    Staging environment             │
-│                            │                                    │
-│   ← Actions appear here    │    ★ Interact here                 │
-│                            │                                    │
-└────────────────────────────┴────────────────────────────────────┘
+├────────────────────────────────┬────────────────────────────────┤
+│                                │                                │
+│        LEFT Window             │         RIGHT Window           │
+│                                │                                │
+│   Production environment       │    Staging environment         │
+│                                │                                │
+│   ★ Interact here              │    ★ Or interact here          │
+│   ↔ Actions sync both ways ↔   │    ↔ Actions sync both ways ↔  │
+│                                │                                │
+└────────────────────────────────┴────────────────────────────────┘
 ```
 
 ## Supported Interactions
 
 | Action | How to Use |
 |--------|-----------|
-| **Click** | Click anywhere in the control window |
+| **Click** | Click anywhere in either window |
 | **Drag/Pan** | Click and drag (great for maps) |
 | **Zoom** | Mouse scroll wheel |
 | **Type** | Click a text field and type |
@@ -99,16 +108,33 @@ npm start -- https://ridewithgps.com https://huh.ridewithgps.com
 | **Navigate** | Click links, use back/forward buttons |
 | **Refresh** | Browser refresh button, F5, or Ctrl+R |
 | **Keyboard** | Arrow keys, Enter, Tab, shortcuts |
-| **Style Diff** | Press Delete to highlight style differences |
+| **Visual Diff** | Press D to run, Shift+D to clear |
 
-## Style Diff Mode
+## Visual Pixel Diff
 
-Press **Delete** to toggle style diff highlighting on the control window. This compares CSS styles between staging and production:
+Press **D** to run a visual pixel comparison between the two browser windows. This takes screenshots of both pages and highlights any pixel-level differences.
 
-- **Red solid outline** - Element has style differences (layout or typography)
-- **Orange dashed outline** - Element is new (doesn't exist in production)
+| Key | Action |
+|-----|--------|
+| **D** | Run visual diff comparison |
+| **Shift+D** | Clear diff overlay |
+| **Click badge** | Dismiss the notification |
 
-Compared properties include layout (width, height, padding, margin, display, position, flex) and typography (font-size, font-weight, font-family, line-height, text-align).
+### Diff Results
+
+- **Green badge** - "No visual differences detected" (pages are identical)
+- **Red badge** - Shows count and percentage of differing pixels
+- **Red overlay** - Highlights areas where pixels differ
+
+### Tuning Sensitivity
+
+The `--threshold` option controls how sensitive the diff is:
+
+- `0.1` - Very sensitive (catches subtle anti-aliasing differences)
+- `0.5` - Default (balanced, ignores sub-pixel rendering noise)
+- `0.9` - Very lenient (only catches major visual differences)
+
+The diff also downscales images 2x before comparing to filter out scattered sub-pixel noise from font rendering differences.
 
 ## Use Cases
 
@@ -129,12 +155,17 @@ Complex JavaScript-driven interactions may not sync perfectly. The tool captures
 ### Text input issues
 If text doesn't sync in a specific field, try clicking directly in the field first. React-generated IDs are handled, but some dynamic elements may need manual focus.
 
+### Diff shows many false positives
+Try increasing the threshold: `npm start -- --threshold 0.7`. Sub-pixel font rendering can cause scattered differences between browser instances.
+
 ## Technical Details
 
 - Built with [Puppeteer](https://pptr.dev/) for cross-origin browser control
-- Captures events via injected JavaScript in the control page
+- Uses [pixelmatch](https://github.com/mapbox/pixelmatch) for visual diff comparison
+- Captures events via injected JavaScript in both pages
 - Uses Chrome DevTools Protocol (CDP) for wheel events
 - Syncs navigation via `framenavigated` events
+- Bidirectional sync with loop prevention
 
 ## Requirements
 
